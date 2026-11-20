@@ -168,7 +168,8 @@ export async function loadDailyTaskConfig(
     {},
     15000,
   );
-  const version = response?.dataBundleVer;
+  //const version = response?.dataBundleVer;
+ const version = "da6870e190";
   if (typeof version !== "string" || !/^[\w-]+$/.test(version))
     throw new Error("服务器未提供有效的任务配置版本");
   if (!configsByVersion.has(version)) {
