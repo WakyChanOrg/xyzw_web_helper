@@ -149,6 +149,47 @@ export async function fillHangUpTime({
   return { sent: before.remaining, ...after };
 }
 
+const CONFIG_CDN = "https://xxz-xyzw-res.hortorgames.com";
+
+/**
+ * 临时锁版本开关：填一个 CDN 上已发布的版本号（如 "da6870e190"）可完全跳过
+ * 服务端的版本号；保持 null 则跟随服务端，并在其目录 404 时自动回退。
+ */
+const FORCE_CONFIG_VERSION = null;
+
+/**
+ * Fetch the official config bundle for a server-reported version.
+ * When the server's version directory is not published on the CDN yet, fall
+ * back once to the version advertised by `data/version.json`.
+ * @param {Function} fetchConfig Fetch implementation.
+ * @param {string} version Server-reported or forced data bundle version.
+ * @returns {Promise<object>} Raw configuration JSON.
+ * @throws {Error} With the HTTP status and URL so failures stay diagnosable.
+ */
+async function fetchOfficialConfig(fetchConfig, version) {
+  const read = (url, ms) =>
+    fetchConfig(url, { signal: AbortSignal.timeout(ms) });
+  let url = `${CONFIG_CDN}/data/${version}/config.json`;
+  let response = await read(url, 30000);
+  if (response.status === 404) {
+    const versionResponse = await read(`${CONFIG_CDN}/data/version.json`, 15000);
+    if (versionResponse.ok) {
+      const published = (await versionResponse.json())?.version;
+      if (
+        typeof published === "string" &&
+        /^[\w-]+$/.test(published) &&
+        published !== version
+      ) {
+        url = `${CONFIG_CDN}/data/${published}/config.json`;
+        response = await read(url, 30000);
+      }
+    }
+  }
+  if (!response.ok)
+    throw new Error(`官方任务配置读取失败 HTTP ${response.status} ${url}`);
+  return response.json();
+}
+
 /**
  * Load task targets from the official data version returned by the game server.
  * Only immutable configuration is cached; role progress is never cached here.
@@ -162,24 +203,21 @@ export async function loadDailyTaskConfig(
   tokenId,
   fetchConfig = globalThis.fetch,
 ) {
-  const response = await tokenStore.sendMessageWithPromise(
-    tokenId,
-    "system_getdatabundlever",
-    {},
-    15000,
-  );
-  //const version = response?.dataBundleVer;
- const version = "da6870e190";
+  let version = FORCE_CONFIG_VERSION;
+  if (!version) {
+    const response = await tokenStore.sendMessageWithPromise(
+      tokenId,
+      "system_getdatabundlever",
+      {},
+      15000,
+    );
+    version = response?.dataBundleVer;
+  }
   if (typeof version !== "string" || !/^[\w-]+$/.test(version))
-    throw new Error("服务器未提供有效的任务配置版本");
+    throw new Error(`服务器未提供有效的任务配置版本: ${String(version)}`);
   if (!configsByVersion.has(version)) {
     const loading = (async () => {
-      const response = await fetchConfig(
-        `https://xxz-xyzw-res.hortorgames.com/data/${version}/config.json`,
-        { signal: AbortSignal.timeout(30000) },
-      );
-      if (!response.ok) throw new Error("官方任务配置读取失败");
-      const config = await response.json();
+      const config = await fetchOfficialConfig(fetchConfig, version);
       return validateDailyTaskConfig(config);
     })();
     configsByVersion.set(version, loading);
